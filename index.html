@@ -21,6 +21,21 @@
 
     <script type="text/babel">
       const { useMemo, useState } = React;
+/* --- localStorage helpers --- */
+const STORAGE_KEY = "resell_rows_v1";
+function loadRows() {
+  try {
+    const s = localStorage.getItem(STORAGE_KEY);
+    return s ? JSON.parse(s) : null;
+  } catch {
+    return null;
+  }
+}
+function saveRows(rows) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(rows));
+  } catch {}
+}
 
       /* ---------- Clipboard-safe helpers (avoids sandbox errors) ---------- */
       function copyTextSafe(text) {
@@ -99,6 +114,103 @@
           </button>
         );
       }
+function NewItemModal({ onClose, onSave }) {
+  const [form, setForm] = React.useState({
+    itemName: "",
+    category: "",
+    brandModel: "",
+    condition: "",
+    dimensions: "",
+    accessories: "",
+    purchasePrice: "",
+    listPrice: "",
+    estEbay: "",
+    estPoshmark: "",
+    estOfferUp: "",
+    estFacebook: "",
+    estMercari: "",
+    estDepop: "",
+    estConsignment: "",
+    notes: "",
+  });
+
+  function handleChange(e) {
+    const { name, value } = e.target;
+    setForm((f) => ({ ...f, [name]: value }));
+  }
+
+  function toNumber(v) {
+    const n = parseFloat(String(v).replace(/[^0-9.]/g, ""));
+    return isNaN(n) ? 0 : n;
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    const list = toNumber(form.listPrice);
+    // simple defaults: fast = 0.85x, max = 1.15x (you can tune later)
+    const fast = Math.round(list * 0.85 * 100) / 100;
+    const max  = Math.round(list * 1.15 * 100) / 100;
+
+    const row = {
+      id: "user-" + Date.now(),
+      itemName: form.itemName || "Untitled",
+      category: form.category || "",
+      brandModel: form.brandModel || "",
+      condition: form.condition || "",
+      dimensions: form.dimensions || "",
+      accessories: form.accessories || "",
+      purchasePrice: toNumber(form.purchasePrice),
+      listPrice: list,
+      estEbay: toNumber(form.estEbay || list),
+      estPoshmark: toNumber(form.estPoshmark || 0),
+      estOfferUp: toNumber(form.estOfferUp || 0),
+      estFacebook: toNumber(form.estFacebook || 0),
+      estMercari: toNumber(form.estMercari || 0),
+      estDepop: toNumber(form.estDepop || 0),
+      estConsignment: toNumber(form.estConsignment || 0),
+      fastSale: fast,
+      maxSale: max,
+      notes: form.notes || "",
+      recommendation: {
+        // placeholder recommendation; your scoring service can set this later
+        platform: "eBay",
+        scores: { ebay: 75, poshmark: 60, offerup: 55, facebook: 58, mercari: 62, depop: 50, consignment: 40 },
+        rationale: "Default suggestion (replace with scoring later)."
+      }
+    };
+    onSave(row);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+      <form onSubmit={handleSubmit} className="w-full max-w-3xl bg-white rounded-2xl shadow-xl p-5 space-y-4 overflow-auto max-h-[90vh]">
+        <div className="text-lg font-semibold">New Item</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <input className="px-3 py-2 border rounded-xl" name="itemName" placeholder="Item Name/Description" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="category" placeholder="Category" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="brandModel" placeholder="Brand/Model" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="condition" placeholder="Condition" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="dimensions" placeholder="Dimensions/Specs" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="accessories" placeholder="Accessories Included" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="purchasePrice" placeholder="Purchase Price (e.g., 22)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="listPrice" placeholder="List Price (e.g., 64)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estEbay" placeholder="Estimated Resale (eBay)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estPoshmark" placeholder="Estimated Resale (Poshmark)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estOfferUp" placeholder="Estimated Resale (OfferUp)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estFacebook" placeholder="Estimated Resale (Facebook Marketplace)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estMercari" placeholder="Estimated Resale (Mercari)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estDepop" placeholder="Estimated Resale (Depop)" onChange={handleChange} />
+          <input className="px-3 py-2 border rounded-xl" name="estConsignment" placeholder="Estimated Resale (Local Consignment)" onChange={handleChange} />
+          <textarea className="px-3 py-2 border rounded-xl md:col-span-2" name="notes" placeholder="Notes (optional)" onChange={handleChange}></textarea>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-2 rounded-xl border">Cancel</button>
+          <button type="submit" className="px-3 py-2 rounded-xl bg-black text-white">Save Item</button>
+        </div>
+      </form>
+    </div>
+  );
+}
 
       /* ---------- Sample data (edit in-place) ---------- */
       const sampleRows = [
@@ -316,7 +428,11 @@
       }
 
       function App() {
-        const [rows] = useState(sampleRows);
+      const initial = loadRows() || sampleRows;
+const [rows, setRows] = useState(initial);
+const [showNew, setShowNew] = useState(false);
+React.useEffect(() => { saveRows(rows); }, [rows]);
+
         const [selectedId, setSelectedId] = useState(rows[0]?.id);
         const selected = useMemo(() => rows.find(r => r.id === selectedId), [rows, selectedId]);
 
