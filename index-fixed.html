@@ -227,7 +227,8 @@
       }
 
       function PhotoUploadModal({ onClose, onAttach, forRow }) {
-        const [files, setFiles] = useState([]); // NOTE: no TS generics
+        const [files, setFiles] = React.useState([]);
+ // NOTE: no TS generics
 
         function handleChange(e) {
           const f = Array.from(e.target.files || []);
