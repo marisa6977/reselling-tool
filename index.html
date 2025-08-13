@@ -449,7 +449,8 @@ React.useEffect(() => { saveRows(rows); }, [rows]);
                 </div>
                 <div className="flex items-center gap-2">
                   <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50"
-                    onClick={() => alert("New Item form comes here (MVP).")}>New Item</button>
+                   onClick={() => setShowNew(true)}
+>New Item</button>
                   <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50"
                     onClick={() => alert("Photo Uploader comes here (MVP).")}>Upload Photos</button>
                   <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50"
