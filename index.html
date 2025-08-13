@@ -1,0 +1,597 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reselling Tool — Single-File App</title>
+
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- React + ReactDOM (UMD) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <!-- Babel for in-browser JSX transform -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+      html, body { height: 100%; background: #f8fafc; }
+      ::selection { background: #000; color: #fff; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <!-- IMPORTANT: enable React/JSX presets -->
+    <script type="text/babel" data-presets="env,react">
+      const { useMemo, useState, useEffect } = React;
+
+      /* ---------- localStorage ---------- */
+      const STORAGE_KEY = "resell_rows_v1";
+      function loadRows() {
+        try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || null; }
+        catch { return null; }
+      }
+      function saveRows(rows) {
+        try { localStorage.setItem(STORAGE_KEY, JSON.stringify(rows)); }
+        catch {}
+      }
+
+      /* ---------- helpers ---------- */
+      function copyTextSafe(text) {
+        if (navigator.clipboard?.writeText) {
+          return navigator.clipboard.writeText(text || "").catch(() => legacyCopy(text));
+        }
+        return legacyCopy(text);
+      }
+      function legacyCopy(text) {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text || "";
+          ta.setAttribute("readonly", "");
+          ta.style.position = "fixed";
+          ta.style.top = "-2000px";
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand("copy");
+          document.body.removeChild(ta);
+          if (!ok) throw new Error("copy failed");
+          return Promise.resolve();
+        } catch (e) {
+          const manual = window.prompt("Copy the text below (Ctrl/Cmd+C), then press OK:", text || "");
+          return manual !== null ? Promise.resolve() : Promise.reject(e);
+        }
+      }
+      function exportCsv(rows, columns) {
+        const headers = columns.map(c => c.label);
+        const lines = [headers.join(",")];
+        for (const r of rows) {
+          const vals = columns.map(c => {
+            const v = (r[c.key] ?? "").toString().replaceAll('"','""');
+            return `"${v}"`;
+          });
+          lines.push(vals.join(","));
+        }
+        const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "reselling_tool_output.csv";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }
+      function toNumber(v) {
+        const n = parseFloat(String(v ?? "").replace(/[^0-9.]/g, ""));
+        return Number.isNaN(n) ? 0 : n;
+      }
+
+      /* ---------- small UI bits ---------- */
+      function ScorePill({ name, val, active }) {
+        return (
+          <div className={"px-2.5 py-1 rounded-full text-xs font-medium shadow-sm " + (active ? "bg-black text-white" : "bg-white border")}>
+            {name}: {val}
+          </div>
+        );
+      }
+      function CopyBtn({ label, text }) {
+        const [copied, setCopied] = useState(false);
+        return (
+          <button
+            onClick={async () => { try { await copyTextSafe(text || ""); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch {} }}
+            className="px-3 py-1.5 rounded-xl text-sm bg-black text-white shadow hover:opacity-90"
+          >
+            {copied ? "Copied!" : label}
+          </button>
+        );
+      }
+
+      /* ---------- modal frame ---------- */
+      function ModalFrame({ title, children, onClose, onSubmit, submitLabel="Save" }) {
+        return (
+          <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-50">
+            <form onSubmit={onSubmit} className="w-full max-w-3xl bg-white rounded-2xl shadow-xl p-5 space-y-4 overflow-auto max-h-[90vh]">
+              <div className="flex items-center justify-between">
+                <div className="text-lg font-semibold">{title}</div>
+                <button type="button" onClick={onClose} className="px-3 py-2 rounded-xl border">Close</button>
+              </div>
+              {children}
+              {onSubmit && (
+                <div className="flex items-center justify-end gap-2">
+                  <button type="submit" className="px-3 py-2 rounded-xl bg-black text-white">{submitLabel}</button>
+                </div>
+              )}
+            </form>
+          </div>
+        );
+      }
+
+      /* ---------- New Item modal ---------- */
+      function NewItemModal({ onClose, onSave }) {
+        const [form, setForm] = useState({
+          itemName: "", category: "", brandModel: "", condition: "", dimensions: "",
+          accessories: "", purchasePrice: "", listPrice: "", estEbay: "", estPoshmark: "",
+          estOfferUp: "", estFacebook: "", estMercari: "", estDepop: "", estConsignment: "",
+          notes: ""
+        });
+        function handleChange(e) { const { name, value } = e.target; setForm(f => ({ ...f, [name]: value })); }
+        function handleSubmit(e) {
+          e.preventDefault();
+          const list = toNumber(form.listPrice);
+          const fast = Math.round(list * 0.85 * 100) / 100;
+          const max  = Math.round(list * 1.15 * 100) / 100;
+          const row = {
+            id: "user-" + Date.now(),
+            itemName: form.itemName || "Untitled",
+            category: form.category || "",
+            brandModel: form.brandModel || "",
+            condition: form.condition || "",
+            dimensions: form.dimensions || "",
+            accessories: form.accessories || "",
+            purchasePrice: toNumber(form.purchasePrice),
+            listPrice: list,
+            estEbay: toNumber(form.estEbay || list),
+            estPoshmark: toNumber(form.estPoshmark || 0),
+            estOfferUp: toNumber(form.estOfferUp || 0),
+            estFacebook: toNumber(form.estFacebook || 0),
+            estMercari: toNumber(form.estMercari || 0),
+            estDepop: toNumber(form.estDepop || 0),
+            estConsignment: toNumber(form.estConsignment || 0),
+            fastSale: fast, maxSale: max,
+            notes: form.notes || "",
+            photos: [],
+            recommendation: {
+              platform: "eBay",
+              scores: { ebay: 75, poshmark: 60, offerup: 55, facebook: 58, mercari: 62, depop: 50, consignment: 40 },
+              rationale: "Default suggestion (replace with scoring later)."
+            }
+          };
+          onSave(row);
+        }
+        return (
+          <ModalFrame title="New Item" onClose={onClose} onSubmit={handleSubmit} submitLabel="Save Item">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <input className="px-3 py-2 border rounded-xl" name="itemName" placeholder="Item Name/Description" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="category" placeholder="Category" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="brandModel" placeholder="Brand/Model" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="condition" placeholder="Condition" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="dimensions" placeholder="Dimensions/Specs" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="accessories" placeholder="Accessories Included" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="purchasePrice" placeholder="Purchase Price (e.g., 22)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="listPrice" placeholder="List Price (e.g., 64)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estEbay" placeholder="Estimated Resale (eBay)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estPoshmark" placeholder="Estimated Resale (Poshmark)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estOfferUp" placeholder="Estimated Resale (OfferUp)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estFacebook" placeholder="Estimated Resale (Facebook Marketplace)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estMercari" placeholder="Estimated Resale (Mercari)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estDepop" placeholder="Estimated Resale (Depop)" onChange={handleChange} />
+              <input className="px-3 py-2 border rounded-xl" name="estConsignment" placeholder="Estimated Resale (Local Consignment)" onChange={handleChange} />
+              <textarea className="px-3 py-2 border rounded-xl md:col-span-2" name="notes" placeholder="Notes (optional)" onChange={handleChange}></textarea>
+            </div>
+          </ModalFrame>
+        );
+      }
+
+      /* ---------- Upload Photos modal ---------- */
+      function PhotoUploadModal({ onClose, onAttach, forRow }) {
+        const [files, setFiles] = useState([]); // NOTE: no TypeScript generics here
+        function handleChange(e) { setFiles(Array.from(e.target.files || [])); }
+        function handleSubmit(e) {
+          e.preventDefault();
+          const withUrls = files.map(f => ({ name: f.name, url: URL.createObjectURL(f) }));
+          onAttach(withUrls);
+        }
+        return (
+          <ModalFrame title={"Upload Photos" + (forRow ? " — " + forRow.itemName : "")} onClose={onClose} onSubmit={handleSubmit} submitLabel="Attach">
+            <input type="file" accept="image/*" multiple onChange={handleChange}
+                   className="block w-full text-sm file:mr-3 file:px-3 file:py-2 file:rounded-xl file:border file:bg-white file:hover:bg-gray-50" />
+            {files.length > 0 && (
+              <div className="flex gap-3 overflow-x-auto py-2">
+                {files.map((f, i) => (
+                  <div key={i} className="text-xs text-gray-600 border rounded-lg p-2">{f.name}</div>
+                ))}
+              </div>
+            )}
+          </ModalFrame>
+        );
+      }
+
+      /* ---------- Add From Text modal ---------- */
+      function AddFromTextModal({ onClose, onSave }) {
+        const [text, setText] = useState("");
+        function parseText() {
+          const lines = text.trim().split(/\r?\n/).filter(Boolean);
+          if (lines.length === 1 && lines[0].includes(",")) {
+            const parts = lines[0].split(",").map(s => s.trim());
+            if (parts.length >= 6) {
+              return {
+                itemName: parts[0], category: parts[1], brandModel: parts[2], condition: parts[3],
+                purchasePrice: toNumber(parts[4]), listPrice: toNumber(parts[5])
+              };
+            }
+          }
+          const obj = {};
+          for (const ln of lines) {
+            const m = ln.match(/^\s*([a-zA-Z ]+):\s*(.+)$/);
+            if (m) obj[m[1].toLowerCase().replace(/\s+/g,"")] = m[2].trim();
+          }
+          return {
+            itemName: obj.itemname || obj.title || "Untitled",
+            category: obj.category || "",
+            brandModel: obj.brand || obj.brandmodel || "",
+            condition: obj.condition || "",
+            purchasePrice: toNumber(obj.purchase || obj.purchaseprice || "0"),
+            listPrice: toNumber(obj.list || obj.listprice || "0"),
+          };
+        }
+        function handleSubmit(e) {
+          e.preventDefault();
+          const basic = parseText();
+          const list = basic.listPrice || 0;
+          const fast = Math.round(list * 0.85 * 100) / 100;
+          const max  = Math.round(list * 1.15 * 100) / 100;
+          const row = {
+            id: "user-" + Date.now(),
+            itemName: basic.itemName, category: basic.category, brandModel: basic.brandModel, condition: basic.condition,
+            dimensions: "", accessories: "", purchasePrice: basic.purchasePrice, listPrice: list,
+            estEbay: list, estPoshmark: 0, estOfferUp: 0, estFacebook: 0, estMercari: 0, estDepop: 0, estConsignment: 0,
+            fastSale: fast, maxSale: max, notes: "", photos: [],
+            recommendation: { platform: "eBay", scores: { ebay: 70, poshmark: 50, offerup: 50, facebook: 52, mercari: 55, depop: 45, consignment: 35 }, rationale: "Default suggestion from pasted info." }
+          };
+          onSave(row);
+        }
+        return (
+          <ModalFrame title="Add From Text" onClose={onClose} onSubmit={handleSubmit} submitLabel="Create Item">
+            <textarea value={text} onChange={e => setText(e.target.value)} className="w-full h-40 border rounded-xl p-3"
+              placeholder="CSV (single line):&#10;Item,Category,Brand/Model,Condition,Purchase,List&#10;Nike Air Zoom Pegasus 39,Clothing & Accessories,Nike / Pegasus 39,Very Good,22,64&#10;&#10;OR key:value lines:&#10;Item Name: Nike Air Zoom Pegasus 39&#10;Category: Clothing & Accessories&#10;Brand: Nike / Pegasus 39&#10;Condition: Very Good&#10;Purchase Price: 22&#10;List Price: 64" />
+            <div className="text-xs text-gray-600">Paste CSV (single line) or key:value pairs.</div>
+          </ModalFrame>
+        );
+      }
+
+      /* ---------- sample data ---------- */
+      const sampleRows = [
+        {
+          id: "demo-shoes-001",
+          itemName: "Nike Air Zoom Pegasus 39 Women’s 8 Running Shoes",
+          category: "Clothing & Accessories",
+          brandModel: "Nike / Air Zoom Pegasus 39",
+          condition: "Very Good",
+          dimensions: "12×8×5 in (pkg est)",
+          accessories: "Insoles; no box",
+          purchasePrice: 22, listPrice: 64,
+          estEbay: 64, estPoshmark: 62, estOfferUp: 60, estFacebook: 60, estMercari: 61, estDepop: 58, estConsignment: 55,
+          fastSale: 54, maxSale: 74, notes: "Clean uppers; tread ~80%",
+          recommendation: { platform: "eBay", scores: { ebay: 86, poshmark: 78, offerup: 70, facebook: 72, mercari: 76, depop: 66, consignment: 55 }, rationale: "Higher demand in last 90 days, strong offer mechanics, best net after fees." },
+          photos: []
+        },
+        {
+          id: "demo-laptop-002",
+          itemName: "Dell XPS 13 9310 i7/16GB/512GB",
+          category: "Electronics & Tech",
+          brandModel: "Dell / XPS 13 9310",
+          condition: "Good",
+          dimensions: "13.0×8.0×0.6 in",
+          accessories: "Charger included",
+          purchasePrice: 350, listPrice: 725,
+          estEbay: 725, estPoshmark: 0, estOfferUp: 680, estFacebook: 700, estMercari: 690, estDepop: 0, estConsignment: 650,
+          fastSale: 660, maxSale: 799, notes: "Battery health ~85%; light wear",
+          recommendation: { platform: "eBay", scores: { ebay: 90, poshmark: 20, offerup: 75, facebook: 78, mercari: 80, depop: 25, consignment: 60 }, rationale: "Widest buyer base for exact model specs; best comps and net after fees." },
+          photos: []
+        },
+        {
+          id: "demo-tool-004",
+          itemName: "DeWalt 20V Max XR Hammer Drill DCD996",
+          category: "Tools & Hardware",
+          brandModel: "DeWalt / DCD996",
+          condition: "Very Good",
+          dimensions: "15×12×5 in (pkg est)",
+          accessories: "1x battery + charger",
+          purchasePrice: 70, listPrice: 175,
+          estEbay: 175, estPoshmark: 0, estOfferUp: 170, estFacebook: 170, estMercari: 165, estDepop: 0, estConsignment: 150,
+          fastSale: 155, maxSale: 199, notes: "Minimal wear; tested",
+          recommendation: { platform: "eBay", scores: { ebay: 84, poshmark: 10, offerup: 82, facebook: 83, mercari: 78, depop: 8, consignment: 65 }, rationale: "Model/MPN searchable; national reach beats local unless urgency is high." },
+          photos: []
+        }
+      ];
+
+      /* ---------- columns ---------- */
+      const allColumns = [
+        { key: "itemName", label: "Item Name/Description", width: "min-w-[280px]" },
+        { key: "category", label: "Category", width: "min-w-[200px]" },
+        { key: "brandModel", label: "Brand/Model", width: "min-w-[220px]" },
+        { key: "condition", label: "Condition", width: "min-w-[140px]" },
+        { key: "dimensions", label: "Dimensions/Specs", width: "min-w-[180px]" },
+        { key: "accessories", label: "Accessories Included", width: "min-w-[200px]" },
+        { key: "purchasePrice", label: "Purchase Price", width: "min-w-[140px]" },
+        { key: "listPrice", label: "List Price", width: "min-w-[120px]" },
+        { key: "estEbay", label: "Estimated Resale Price (eBay)", width: "min-w-[220px]" },
+        { key: "estPoshmark", label: "Estimated Resale Price (Poshmark)", width: "min-w-[260px]" },
+        { key: "estOfferUp", label: "Estimated Resale Price (OfferUp)", width: "min-w-[240px]" },
+        { key: "estFacebook", label: "Estimated Resale Price (Facebook Marketplace)", width: "min-w-[320px]" },
+        { key: "estMercari", label: "Estimated Resale Price (Mercari)", width: "min-w-[240px]" },
+        { key: "estDepop", label: "Estimated Resale Price (Depop)", width: "min-w-[220px]" },
+        { key: "estConsignment", label: "Estimated Resale Price (Local Consignment)", width: "min-w-[320px]" },
+        { key: "fastSale", label: "Fast Sale Price", width: "min-w-[160px]" },
+        { key: "maxSale", label: "Max Sale Price", width: "min-w-[160px]" },
+        { key: "notes", label: "Notes", width: "min-w-[260px]" },
+      ];
+
+      /* ---------- detail panel ---------- */
+      function DetailPanel({ row, onUploadPhotos }) {
+        const [platform, setPlatform] = useState(row?.recommendation?.platform || "eBay");
+
+        const listingTitle = useMemo(() => row ? `${row.itemName} – ${row.condition}` : "", [row]);
+        const bullets = useMemo(() => {
+          if (!row) return [];
+          const base = [
+            row.brandModel ? `Model: ${row.brandModel}` : null,
+            row.dimensions ? `Dimensions: ${row.dimensions}` : null,
+            row.accessories ? `Included: ${row.accessories}` : null,
+            row.notes || null,
+          ].filter(Boolean);
+          return base.length ? base : ["Key features as shown in photos."];
+        }, [row]);
+
+        const paragraph = useMemo(() => row ? `${row.itemName} in ${row.condition} condition. ${row.notes || "Well cared-for; tested where applicable."}` : "", [row]);
+
+        const platformPrice = useMemo(() => {
+          if (!row) return 0;
+          const map = {
+            "eBay": row.estEbay, "Poshmark": row.estPoshmark, "OfferUp": row.estOfferUp,
+            "Facebook Marketplace": row.estFacebook, "Mercari": row.estMercari,
+            "Depop": row.estDepop, "Local Consignment": row.estConsignment,
+          };
+          return (map[platform] ?? row.listPrice) || 0;
+        }, [row, platform]);
+
+        if (!row) return <div className="p-6 text-sm text-gray-500">Select an item to preview its listing package.</div>;
+
+        return (
+          <div className="h-full flex flex-col">
+            <div className="p-4 border-b">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-gray-500">Recommended Platform</div>
+                  <div className="text-lg font-semibold">{row.recommendation.platform}</div>
+                  <div className="text-xs text-gray-600 mt-1">{row.recommendation.rationale}</div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(row.recommendation.scores).map(([k, v]) => (
+                    <ScorePill key={k} name={k} val={v} active={k.toLowerCase() === row.recommendation.platform.toLowerCase()} />
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 flex gap-2 overflow-x-auto border-b">
+              {["eBay","Poshmark","OfferUp","Facebook Marketplace","Mercari","Depop","Local Consignment"].map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setPlatform(p)}
+                  className={"px-3 py-1.5 rounded-full text-sm whitespace-nowrap " + (platform === p ? "bg-black text-white" : "bg-white border")}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+
+            <div className="p-4 space-y-4 overflow-auto">
+              <div className="flex items-center justify-between">
+                <div className="text-base font-semibold">{platform} Listing Package</div>
+                <div className="flex items-center gap-2">
+                  <CopyBtn label="Copy Title" text={listingTitle} />
+                  <CopyBtn label="Copy Bullets" text={bullets.map(b => `• ${b}`).join("\n")} />
+                  <CopyBtn label="Copy Description" text={paragraph} />
+                  <button onClick={onUploadPhotos} className="px-3 py-1.5 rounded-xl text-sm bg-white border shadow-sm hover:bg-gray-50">Add Photos</button>
+                </div>
+              </div>
+
+              {row.photos?.length > 0 && (
+                <div className="flex gap-2 overflow-x-auto">
+                  {row.photos.map((p, i) => (
+                    <img key={i} src={p.url} alt={p.name} className="h-24 w-24 object-cover rounded-xl border" />
+                  ))}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Title</div>
+                  <div className="text-sm text-gray-800">{listingTitle}</div>
+                </div>
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Price</div>
+                  <div className="text-sm">
+                    {"List: $" + Number(platformPrice).toFixed(2) + " • Fast: $" + Number(row.fastSale).toFixed(2) + " • Max: $" + Number(row.maxSale).toFixed(2)}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Item Specifics</div>
+                  <div className="text-sm text-gray-700 space-y-1">
+                    <div><span className="text-gray-500">Brand/Model:</span> {row.brandModel}</div>
+                    <div><span className="text-gray-500">Category:</span> {row.category}</div>
+                    <div><span className="text-gray-500">Condition:</span> {row.condition}</div>
+                    <div><span className="text-gray-500">Dimensions/Specs:</span> {row.dimensions}</div>
+                    {row.accessories && (<div><span className="text-gray-500">Accessories:</span> {row.accessories}</div>)}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Description</div>
+                  <ul className="list-disc pl-5 text-sm text-gray-800 space-y-1">
+                    {bullets.map((b, i) => <li key={i}>{b}</li>)}
+                  </ul>
+                  <div className="text-sm text-gray-800 mt-2">{paragraph}</div>
+                </div>
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Shipping Suggestion</div>
+                  <div className="text-sm text-gray-800">
+                    {(platform === "Facebook Marketplace" || platform === "OfferUp" || platform === "Local Consignment")
+                      ? "Local pickup encouraged; add delivery note if offered."
+                      : "Parcel shipping; choose lowest safe rate (Ground/Parcel Select)."}
+                  </div>
+                </div>
+                <div className="p-3 rounded-2xl border bg-white shadow-sm">
+                  <div className="text-sm font-medium mb-1">Policy Defaults</div>
+                  <div className="text-sm text-gray-800">
+                    {platform === "eBay" ? "30-day buyer-paid"
+                      : platform === "Poshmark" ? "Per-platform final sale"
+                      : (platform === "Mercari" || platform === "Depop") ? "Per-platform policy"
+                      : "Local sale; no returns"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      /* ---------- App ---------- */
+      function App() {
+        const initial = loadRows() || sampleRows;
+        const [rows, setRows] = useState(initial);
+        const [showNew, setShowNew] = useState(false);
+        const [showUpload, setShowUpload] = useState(false);
+        const [showAddText, setShowAddText] = useState(false);
+        const [selectedId, setSelectedId] = useState(initial[0]?.id || null);
+        const [query, setQuery] = useState("");
+        const [category, setCategory] = useState("All Categories");
+
+        useEffect(() => { saveRows(rows); }, [rows]);
+
+        const filtered = useMemo(() => {
+          const q = query.trim().toLowerCase();
+          return rows.filter(r => {
+            const okCat = category === "All Categories" || r.category === category;
+            if (!q) return okCat;
+            const hay = [r.itemName, r.brandModel, r.condition, r.notes, r.category].join(" ").toLowerCase();
+            return okCat && hay.includes(q);
+          });
+        }, [rows, query, category]);
+
+        const selected = useMemo(() => rows.find(r => r.id === selectedId), [rows, selectedId]);
+
+        function attachPhotos(filesWithUrls) {
+          setRows(prev => prev.map(r => r.id === selectedId ? { ...r, photos: [...(r.photos || []), ...filesWithUrls] } : r));
+          setShowUpload(false);
+        }
+        function addRowAndSelect(row) {
+          setRows(r => [row, ...r]);
+          setShowNew(false);
+          setShowAddText(false);
+          setSelectedId(row.id);
+        }
+
+        return (
+          <div className="min-h-screen w-full bg-gray-50">
+            <div className="sticky top-0 z-10 bg-white/80 backdrop-blur border-b">
+              <div className="max-w-screen-2xl mx-auto px-4 py-3 flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-2xl bg-black" />
+                  <div>
+                    <div className="text-sm uppercase tracking-wide text-gray-500">Reselling Tool</div>
+                    <div className="text-lg font-semibold">Inventory & Listing Assistant</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50" onClick={() => setShowNew(true)}>New Item</button>
+                  <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50" onClick={() => setShowUpload(true)} disabled={!selected}>Upload Photos</button>
+                  <button className="px-3 py-2 rounded-xl bg-white border shadow-sm hover:bg-gray-50" onClick={() => setShowAddText(true)}>Add From Text</button>
+                  <button className="px-3 py-2 rounded-xl bg-black text-white shadow hover:opacity-90" onClick={() => exportCsv(rows, allColumns)}>Export CSV</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="max-w-screen-2xl mx-auto p-4 grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-4">
+              <div className="rounded-2xl border bg-white shadow-sm overflow-hidden">
+                <div className="p-3 flex items-center justify-between gap-3 border-b">
+                  <div className="text-base font-semibold">Your Items</div>
+                  <div className="flex items-center gap-2">
+                    <input className="px-3 py-2 rounded-xl border bg-gray-50 text-sm w-64" placeholder="Search items…" value={query} onChange={e => setQuery(e.target.value)} />
+                    <select className="px-3 py-2 rounded-xl border bg-gray-50 text-sm" value={category} onChange={e => setCategory(e.target.value)}>
+                      <option>All Categories</option>
+                      <option>Clothing & Accessories</option>
+                      <option>Electronics & Tech</option>
+                      <option>Tools & Hardware</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="overflow-auto">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gray-100 sticky top-0 z-0">
+                      <tr>
+                        {allColumns.map(c => (
+                          <th key={c.key} className={"text-left font-medium text-gray-600 p-3 border-b " + c.width}>{c.label}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(r => (
+                        <tr key={r.id} className={"border-b cursor-pointer hover:bg-gray-50 " + (selectedId === r.id ? "bg-yellow-50" : "")} onClick={() => setSelectedId(r.id)}>
+                          <td className="p-3 font-medium text-gray-900 min-w-[280px]">{r.itemName}</td>
+                          <td className="p-3 text-gray-700 min-w-[200px]">{r.category}</td>
+                          <td className="p-3 text-gray-700 min-w-[220px]">{r.brandModel}</td>
+                          <td className="p-3 text-gray-700 min-w-[140px]">{r.condition}</td>
+                          <td className="p-3 text-gray-700 min-w-[180px]">{r.dimensions}</td>
+                          <td className="p-3 text-gray-700 min-w-[200px]">{r.accessories}</td>
+                          <td className="p-3 text-gray-700 min-w-[140px]">{"$" + Number(r.purchasePrice).toFixed(2)}</td>
+                          <td className="p-3 text-gray-700 min-w-[120px]">{"$" + Number(r.listPrice).toFixed(2)}</td>
+                          <td className="p-3 text-gray-700 min-w-[220px]">{"$" + Number(r.estEbay).toFixed(2)}</td>
+                          <td className="p-3 text-gray-700 min-w-[260px]">{(r.estPoshmark > 0) ? ("$" + Number(r.estPoshmark).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[240px]">{(r.estOfferUp > 0) ? ("$" + Number(r.estOfferUp).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[320px]">{(r.estFacebook > 0) ? ("$" + Number(r.estFacebook).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[240px]">{(r.estMercari > 0) ? ("$" + Number(r.estMercari).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[220px]">{(r.estDepop > 0) ? ("$" + Number(r.estDepop).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[320px]">{(r.estConsignment > 0) ? ("$" + Number(r.estConsignment).toFixed(2)) : "—"}</td>
+                          <td className="p-3 text-gray-700 min-w-[160px]">{"$" + Number(r.fastSale).toFixed(2)}</td>
+                          <td className="p-3 text-gray-700 min-w-[160px]">{"$" + Number(r.maxSale).toFixed(2)}</td>
+                          <td className="p-3 text-gray-700 min-w-[260px]">{r.notes}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border bg-white shadow-sm h-[calc(100vh-160px)] sticky top-[96px] overflow-hidden">
+                <DetailPanel row={selected} onUploadPhotos={() => setShowUpload(true)} />
+              </div>
+            </div>
+
+            {showNew && <NewItemModal onClose={() => setShowNew(false)} onSave={addRowAndSelect} />}
+            {showUpload && selected && (
+              <PhotoUploadModal forRow={selected} onClose={() => setShowUpload(false)} onAttach={attachPhotos} />
+            )}
+            {showAddText && <AddFromTextModal onClose={() => setShowAddText(false)} onSave={addRowAndSelect} />}
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<App />);
+    </script>
+  </body>
+</html>
